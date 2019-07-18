@@ -205,15 +205,55 @@ class OutputITI1480A:
 
 
 class OutputPcap:
-    LINK_TYPE = 255 #FIXME
+    LINKTYPE_OPENVIZSLA = 278
+    """OpenVizsla pcap packet format
+
+    First octet in record denotes the record type.
+    Currently only the 0xA0 is defined. Other type values are reserved for future use.
+
+    0        1        2        3        4        5        6        7        8
+     01234567 01234567 01234567 01234567 01234567 01234567 01234567 01234567
+    +--------+-----------------+-----------------+--------------------------+----------~
+    |  0xA0  |      Flags      |       Size      |         Timestamp        |  USB Data
+    +--------+-----------------+-----------------+--------------------------+----------~
+
+    All multibyte fields are Little-Endian.
+    Flags are the same as FPGA uses.
+    Size is the length of optional USB Data (may be 0).
+    Timestamp is 24-bit 60 MHz counter value.
+    Optional USB Data, if present, starts with USB Packet ID.
+    """
 
     def __init__(self, output):
         self.output = output
-        self.output.write(struct.pack("IHHIIII", 0xa1b2c3d4, 2, 4, 0, 0, 1<<20, self.LINK_TYPE))
+        self.output.write(struct.pack("IHHIIII", 0xa1b23c4d, 2, 4, 0, 0, 65535, self.LINKTYPE_OPENVIZSLA))
+        # Assume that capture started at the same time this object was created. This is not a proper time
+        # synchronization but should be good enough. Record time is advanced based on the FPGA clock.
+        self.utc_ts = int(time.time())
+        self.last_ts = 0
+        self.ts_offset = 0
 
     def handle_usb(self, ts, pkt, flags):
-        self.output.write(struct.pack("IIIIH", 0, 0, len(pkt) + 2, len(pkt) + 2, flags))
+        # Increment timestamp based on the 60 MHz 24-bit counter value.
+        # Convert remaining clocks to nanoseconds: 1 clk = 1 / 60 MHz = 16.(6) ns
+        if ts < self.last_ts:
+            self.ts_offset += (1 << 24)
+        self.last_ts = ts
+        clks = self.ts_offset + ts
+        if clks >= 60e6:
+            self.utc_ts += 1
+            self.ts_offset -= 60e6
+            clks -= 60e6
+        nanosec = int((clks * 17) - (clks // 3))
+        # Write pcap record header in host endian
+        # TODO: FPGA does not provide us with the untruncated packet length thus incl_len is set to orig_len
+        # When (and if) FPGA does indicate the length of truncated packets, change the record header to
+        # contain different incl_len (len(pkt) + 8) and orig_len (untruncated packet size + 8)
+        self.output.write(struct.pack("IIII", self.utc_ts, nanosec, len(pkt) + 8, len(pkt) + 8))
+        # OpenVizsla flags are always encoded as Little-Endian inside the record
+        self.output.write(struct.pack("<BHHHB", 0xA0, flags, len(pkt), ts & 0xFFFF, (ts >> 16) & 0xFF))
         self.output.write(pkt)
+
 
 def do_sdramtests(dev, cb=None, tests = range(0, 6)):
 
