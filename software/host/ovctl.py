@@ -139,8 +139,6 @@ class OutputCustom:
     def __init__(self, output, speed):
         self.output = output
         self.speed = speed
-        self.last_ts = 0
-        self.ts_offset = 0
         try:
             with open("template_custom.txt") as f:
                 self.template = f.readline()
@@ -148,11 +146,8 @@ class OutputCustom:
             self.template = "data=%s speed=%s time=%f\n"
 
     def handle_usb(self, ts, pkt, flags, orig_len):
-        if ts < self.last_ts:
-            self.ts_offset += 0x1000000
-        self.last_ts = ts
         pkthex = " ".join("%02x" % x for x in pkt)
-        self.output.write(bytes(self.template % (pkthex, self.speed.upper(), (ts + self.ts_offset) / 60e6), "ascii"))
+        self.output.write(bytes(self.template % (pkthex, self.speed.upper(), ts / 60e6), "ascii"))
 
 
 class OutputITI1480A:
@@ -169,12 +164,9 @@ class OutputITI1480A:
         if (len(pkt) == 0) or (pkt[0] == 0xa5):
             return
 
-        # Normalize timestamp and get delta vs prev packet
+        # Get delta vs prev packet
         if self.ts_last is None:
             self.ts_last = ts
-
-        if ts < self.ts_last:
-            self.ts_offset
 
         ts_delta = ts - self.ts_last
 
@@ -220,14 +212,11 @@ class OutputPcap:
     def handle_usb(self, ts, pkt, flags, orig_len):
         # Increment timestamp based on the 60 MHz 24-bit counter value.
         # Convert remaining clocks to nanoseconds: 1 clk = 1 / 60 MHz = 16.(6) ns
-        if ts < self.last_ts:
-            self.ts_offset += (1 << 24)
+        diff_ts = ts - self.last_ts
         self.last_ts = ts
-        clks = self.ts_offset + ts
-        if clks >= 60e6:
-            self.utc_ts += 1
-            self.ts_offset -= 60e6
-            clks -= 60e6
+        seconds, clks = divmod(self.ts_offset + diff_ts, 60e6)
+        self.utc_ts = int(self.utc_ts + seconds) & 0xffffffff
+        self.ts_offset = clks
         nanosec = int((clks * 17) - (clks // 3))
         if len(pkt) == 0:
             return

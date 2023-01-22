@@ -7,6 +7,25 @@ from ovhw.ov_types import ULPI_DATA_TAG
 from ovhw.constants import *
 from ovhw.whacker.util import *
 
+# Header format:
+# A0 - magic byte
+# F0 F1 - flags
+# SL SH - packet size (lower 13 bits) and delta timestamp size (3 bits)
+# T0 T1 T2 T3 T4 T5 T6 T7 - delta timestamp from previous packet
+# d0....dN - captured USB packet data
+#
+# Delta timestamp size is 1 + value encoded in delta timestamp bits.
+# Captured USB packet data is at most MAX_PACKET_SIZE bytes long. Packet
+# size can be greater than MAX_PACKET_SIZE, however such size indicate
+# errors either on the bus itself (babble) or capture path.
+#
+# Flags format
+#
+# F0.0 - ERR  - Line level error (ULPI.RXERR asserted during packet)
+# F0.1 - OVF  - RX Path Overflow (can happen on high-speed traffic)
+# F0.2 - CLIP - Filter clipped (we do not set yet)
+# F0.3 - PERR - Protocol level err (but ULPI was fine, ???)
+MAX_HEADER_SIZE = 13
 class Producer(Module):
 
     def __init__(self, wrport, depth, consume_watermark, ena, la_filters=[]):
@@ -17,39 +36,33 @@ class Producer(Module):
 
         # Produce side
         self.submodules.produce_write = Acc_inc(max=depth)
-        self.submodules.produce_header = Acc(max=depth)
+        self.submodules.produce_header = Acc(max=depth, reset=MAX_HEADER_SIZE)
 
         self.consume_point = Acc(max=depth)
-        
-        self.submodules.size = Acc_inc_sat(16)
+
+        # 13 bits (8191) for packet size is more than enough
+        # Use the upper 3 bits to encode delta timestamp size
+        self.submodules.delta_ts_size = Acc(3)
+        self.submodules.size = Acc_inc_sat(13)
         self.submodules.flags = Acc_or(16)
 
         self.submodules.to_start = Acc(1)
 
-        # Header format:
-        # A0 F0 F1 SL SH 00 00 00 d0....dN
-
-        # Flags format
-        # 
-        # F0.0 - ERR  - Line level error (ULPI.RXERR asserted during packet)
-        # F0.1 - OVF  - RX Path Overflow (shouldn't happen - debugging)
-        # F0.2 - CLIP - Filter clipped (we do not set yet)
-        # F0.3 - PERR - Protocol level err (but ULPI was fine, ???)
-        #
-        # Following not implemented yet
-        # F0.6 - SHORT - short packet, no size, fixed 4 byte data
-        # F0.7 - EXT   - Extended header
         self.submodules.fsm = FSM()
 
         has_space = Signal()
 
-        self.comb += has_space.eq(((consume_watermark - self.produce_write.v - 1) & (depth - 1)) > 8)
+        self.comb += has_space.eq(((consume_watermark - self.produce_write.v - 1) & (depth - 1)) > MAX_HEADER_SIZE)
 
         # Grab packet timestamp at SOP
         pkt_timestamp = Signal(len(self.ulpi_sink.payload.ts))
         self.sync += If(self.ulpi_sink.payload.is_start & self.ulpi_sink.ack,
                 pkt_timestamp.eq(self.ulpi_sink.payload.ts))
-
+        # Output variable-length delta timestamp relative to previous packet
+        rel_timestamp = Signal(len(self.ulpi_sink.payload.ts))
+        self.submodules.delta_timestamp = Acc(len(self.ulpi_sink.payload.ts))
+        self.submodules.previous_timestamp = Acc(len(self.ulpi_sink.payload.ts))
+        self.sync += rel_timestamp.eq(pkt_timestamp - self.previous_timestamp.v)
 
         payload_is_rxcmd = Signal()
         self.comb += payload_is_rxcmd.eq(
@@ -102,7 +115,9 @@ class Producer(Module):
 
                     If(~self.to_start.v | (self.ulpi_sink.stb & stuff_packet), self.ulpi_sink.ack.eq(1)),
 
-                    self.produce_write.set(self.produce_header.v+8),
+                    # Produce header points to last written header byte, thus
+                    # in IDLE state it points to first captured USB data byte
+                    self.produce_write.set(self.produce_header.v),
                     self.size.set(0),
                     self.flags.set(flags_ini),
                     self.to_start.set(0),
@@ -113,7 +128,11 @@ class Producer(Module):
                         NextState("DATA")
 
                     ).Elif(stuff_packet,
-                        NextState("WH0"),
+                        # Capture reference timestamp
+                        self.delta_timestamp.set(0),
+                        self.previous_timestamp.set(self.ulpi_sink.payload.ts),
+
+                        NextState("WRT0"),
                         clear_acc_flags.eq(1),
                     )
 
@@ -123,10 +142,11 @@ class Producer(Module):
                 )
         )
 
-        def write_hdr(statename, nextname, hdr_offs, val):
+        def write_hdr(statename, nextname, val):
             self.fsm.act(statename, 
                     NextState(nextname),
-                    wrport.adr.eq(self.produce_header.v + hdr_offs),
+                    self.produce_header.set(self.produce_header.v - 1),
+                    wrport.adr.eq(self.produce_header.v - 1),
                     wrport.dat_w.eq(val),
                     wrport.we.eq(1)
                     )
@@ -188,34 +208,64 @@ class Producer(Module):
                     If(filter_reject,
                         NextState("IDLE")
                     ).Else(
-                        clear_acc_flags.eq(1),
-                        NextState("WH0"))
+                        self.previous_timestamp.set(pkt_timestamp),
+                        self.delta_timestamp.set(rel_timestamp),
+                        If(rel_timestamp[56:64],
+                            self.delta_ts_size.set(7),
+                            NextState("WRT7")
+                        ).Elif(rel_timestamp[48:56],
+                            self.delta_ts_size.set(6),
+                            NextState("WRT6")
+                        ).Elif(rel_timestamp[40:48],
+                            self.delta_ts_size.set(5),
+                            NextState("WRT5")
+                        ).Elif(rel_timestamp[32:40],
+                            self.delta_ts_size.set(4),
+                            NextState("WRT4")
+                        ).Elif(rel_timestamp[24:32],
+                            self.delta_ts_size.set(3),
+                            NextState("WRT3")
+                        ).Elif(rel_timestamp[16:24],
+                            self.delta_ts_size.set(2),
+                            NextState("WRT2")
+                        ).Elif(rel_timestamp[8:16],
+                            self.delta_ts_size.set(1),
+                            NextState("WRT1")
+                        ).Else(
+                            self.delta_ts_size.set(0),
+                            NextState("WRT0")
+                        ),
+                        clear_acc_flags.eq(1))
                 ))
 
-        write_hdr("WH0", "WRF0", 0, 0xA0)
-
-        # Write flags field
-        write_hdr("WRF0", "WRF1", 1, self.flags.v[:8])
-        write_hdr("WRF1", "WRSL", 2, self.flags.v[8:16])
+        # Write header beginning with last header byte
+        write_hdr("WRT7", "WRT6", self.delta_timestamp.v[56:64])
+        write_hdr("WRT6", "WRT5", self.delta_timestamp.v[48:56])
+        write_hdr("WRT5", "WRT4", self.delta_timestamp.v[40:48])
+        write_hdr("WRT4", "WRT3", self.delta_timestamp.v[32:40])
+        write_hdr("WRT3", "WRT2", self.delta_timestamp.v[24:32])
+        write_hdr("WRT2", "WRT1", self.delta_timestamp.v[16:24])
+        write_hdr("WRT1", "WRT0", self.delta_timestamp.v[8:16])
+        write_hdr("WRT0", "WRSH", self.delta_timestamp.v[:8])
 
         # Write size field
-        write_hdr("WRSL", "WRSH", 3, self.size.v[:8])
-        write_hdr("WRSH", "WRTL", 4, self.size.v[8:16])
+        write_hdr("WRSH", "WRSL", self.delta_ts_size.v[:3] << 5 | self.size.v[8:13])
+        write_hdr("WRSL", "WRF1", self.size.v[:8])
 
-        write_hdr("WRTL", "WRTM", 5, pkt_timestamp[:8])
-        write_hdr("WRTM", "WRTH", 6, pkt_timestamp[8:16])
-        write_hdr("WRTH", "SEND", 7, pkt_timestamp[16:24])
+        # Write flags field
+        write_hdr("WRF1", "WRF0", self.flags.v[8:16])
+        write_hdr("WRF0", "WH0", self.flags.v[:8])
+
+        # Write header magic byte
+        write_hdr("WH0", "SEND", 0xA0)
 
         self.fsm.act("SEND",
             self.out_addr.stb.eq(1),
             self.out_addr.payload.start.eq(self.produce_header.v),
-            If(packet_too_long,
-                self.out_addr.payload.count.eq(MAX_PACKET_SIZE + 8)
-            ).Else(
-                self.out_addr.payload.count.eq(self.size.v + 8),
-            ),
+            self.out_addr.payload.count.eq(self.produce_write.v - self.produce_header.v),
             If(self.out_addr.ack,
-                self.produce_header.set(self.produce_write.v),
+                # Reserve space for (worst case) next packet header
+                self.produce_header.set(self.produce_write.v + MAX_HEADER_SIZE),
                 NextState("IDLE")
             )
         )
