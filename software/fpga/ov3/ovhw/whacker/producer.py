@@ -9,7 +9,7 @@ from ovhw.whacker.util import *
 
 # Header format:
 # A0 - magic byte
-# F0 F1 - flags
+# F0 - flags
 # SL SH - packet size (lower 13 bits) and delta timestamp size (3 bits)
 # T0 T1 T2 T3 T4 T5 T6 T7 - delta timestamp from previous packet
 # d0....dN - captured USB packet data
@@ -25,7 +25,7 @@ from ovhw.whacker.util import *
 # F0.1 - OVF  - RX Path Overflow (can happen on high-speed traffic)
 # F0.2 - CLIP - Filter clipped (we do not set yet)
 # F0.3 - PERR - Protocol level err (but ULPI was fine, ???)
-MAX_HEADER_SIZE = 13
+MAX_HEADER_SIZE = 12
 class Producer(Module):
 
     def __init__(self, wrport, depth, consume_watermark, ena, la_filters=[]):
@@ -44,7 +44,7 @@ class Producer(Module):
         # Use the upper 3 bits to encode delta timestamp size
         self.submodules.delta_ts_size = Acc(3)
         self.submodules.size = Acc_inc_sat(13)
-        self.submodules.flags = Acc_or(16)
+        self.submodules.flags = Acc_or(8)
 
         self.submodules.to_start = Acc(1)
 
@@ -93,7 +93,7 @@ class Producer(Module):
             self.packet_last.set(1)).Elif(clear_acc_flags,
             self.packet_last.set(0))
 
-        flags_ini = Signal(16)
+        flags_ini = Signal(8)
         self.comb += flags_ini.eq(
             Mux(self.packet_last.v, HF0_LAST, 0) |
             Mux(self.packet_first.v, HF0_FIRST, 0)
@@ -250,10 +250,9 @@ class Producer(Module):
 
         # Write size field
         write_hdr("WRSH", "WRSL", self.delta_ts_size.v[:3] << 5 | self.size.v[8:13])
-        write_hdr("WRSL", "WRF1", self.size.v[:8])
+        write_hdr("WRSL", "WRF0", self.size.v[:8])
 
         # Write flags field
-        write_hdr("WRF1", "WRF0", self.flags.v[8:16])
         write_hdr("WRF0", "WH0", self.flags.v[:8])
 
         # Write header magic byte

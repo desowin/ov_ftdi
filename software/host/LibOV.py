@@ -444,7 +444,7 @@ class RXCSniff:
 
         def getNeededSizeForMagic(self, b):
             if b == 0xA0:
-                return 5
+                return 4
             return 1
 
         def __init__(self):
@@ -471,21 +471,21 @@ class RXCSniff:
                 return 2
             else:
                 #print("SIZING: %s" % " ".join("%02x" %i for i in buf))
-                flags = buf[1] | buf[2] << 8
-                delta_ts_len = (buf[4] >> 5) + 1
-                orig_len = (buf[4] & 0x1f) << 8 | buf[3]
+                flags = buf[1]
+                delta_ts_len = (buf[3] >> 5) + 1
+                orig_len = (buf[3] & 0x1f) << 8 | buf[2]
                 if flags & HF0_TRUNC:
-                    return MAX_PACKET_SIZE + 5 + delta_ts_len
-                return orig_len + 5 + delta_ts_len
+                    return MAX_PACKET_SIZE + 4 + delta_ts_len
+                return orig_len + 4 + delta_ts_len
 
 
         def consume(self, buf):
             if buf[0] == 0xA0:
-                flags = buf[1] | buf[2] << 8
-                delta_ts_len = (buf[4] >> 5) + 1
-                orig_len = (buf[4] & 0x1f) << 8 | buf[3]
+                flags = buf[1]
+                delta_ts_len = (buf[3] >> 5) + 1
+                orig_len = (buf[3] & 0x1f) << 8 | buf[2]
                 ts = 0
-                offset = 5
+                offset = 4
                 for i in range(0, delta_ts_len):
                     ts |= buf[offset + i] << (8 * i)
                 offset += delta_ts_len
