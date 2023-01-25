@@ -1,10 +1,11 @@
 from migen import *
 from misoc.interconnect.csr import AutoCSR, CSRStatus, CSRStorage
-from misoc.interconnect.stream import Endpoint
+from misoc.interconnect.stream import Endpoint, SyncFIFO
 from migen.genlib.fsm import FSM, NextState
 
 from ovhw.whacker.consumer import Consumer
 from ovhw.whacker.producer import Producer
+from ovhw.whacker.util import dmatpl
 
 from ovhw.constants import *
 
@@ -26,10 +27,14 @@ class Whacker(Module, AutoCSR):
 
         self.submodules.consumer = Consumer(rdport, depth)
         self.submodules.producer = Producer(wrport, depth, self.consumer.pos, self._cfg.storage[0])
-        
+
+        self.submodules.pkt_fifo = SyncFIFO(dmatpl(depth), 8)
 
         self.sink = self.producer.ulpi_sink
-        self.comb += self.producer.out_addr.connect(self.consumer.sink)
+        self.comb += [
+            self.producer.out_addr.connect(self.pkt_fifo.sink),
+            self.pkt_fifo.source.connect(self.consumer.sink),
+        ]
         self.source = self.consumer.source
 
         # Debug signals for state tracing
