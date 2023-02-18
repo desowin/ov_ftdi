@@ -2,8 +2,9 @@ from migen import *
 from misoc.interconnect.stream import Endpoint
 from migen.fhdl.bitcontainer import bits_for
 from migen.genlib.fsm import FSM, NextState
+from migen.genlib.misc import WaitTimer
 
-from ovhw.whacker.util import dmatpl
+from ovhw.whacker.util import dmatpl, Acc
 from ovhw.constants import *
 
 from ovhw.ov_types import D_LAST, ULPI_DATA_D
@@ -40,18 +41,28 @@ class Consumer(Module):
             self.ct.eq(self.ct_next)
             ]
 
+        # Prevent last byte waiting excessive amount of time on SDRAM write by
+        # lazily sending filler magic byte if total number of bytes sent is odd
+        filler_needed = Acc(1)
+        filler_timer = WaitTimer(FILLER_TIMEOUT)
+        self.submodules += filler_needed, filler_timer
+
         self.submodules.fsm = FSM()
 
         self.fsm.act("IDLE",
                 self.busy.eq(0),
+                filler_timer.wait.eq(filler_needed.v & ~self.sink.stb),
                 If(self.sink.stb,
                     self.busy.eq(1),
                     self.sink.ack.eq(1),
                     self.pos_next.eq(self.sink.payload.start),
                     self.ct_next.eq(self.sink.payload.count-1),
+                    filler_needed.set(filler_needed.v ^ self.sink.payload.count[0]),
                     NextState('d'),
+                ).Elif(filler_timer.done,
+                    NextState("FILLER"),
                 )
-                )
+            )
         
         self.fsm.act("d",
                 self.busy.eq(1),
@@ -71,3 +82,15 @@ class Consumer(Module):
                 )
             )
 
+        self.fsm.act("FILLER",
+            self.busy.eq(1),
+            self.source.stb.eq(1),
+            self.source.payload.d.eq(FILLER_MAGIC),
+            self.source.payload.last.eq(1),
+
+            filler_needed.set(~filler_needed.v),
+
+            If(self.source.ack,
+                NextState("IDLE")
+            )
+        )

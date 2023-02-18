@@ -59,10 +59,8 @@ class Producer(Module):
         self.sync += If(self.ulpi_sink.payload.is_start & self.ulpi_sink.ack,
                 pkt_timestamp.eq(self.ulpi_sink.payload.ts))
         # Output variable-length delta timestamp relative to previous packet
-        rel_timestamp = Signal(len(self.ulpi_sink.payload.ts))
         self.submodules.delta_timestamp = Acc(len(self.ulpi_sink.payload.ts))
         self.submodules.previous_timestamp = Acc(len(self.ulpi_sink.payload.ts))
-        self.sync += rel_timestamp.eq(pkt_timestamp - self.previous_timestamp.v)
 
         payload_is_rxcmd = Signal()
         self.comb += payload_is_rxcmd.eq(
@@ -129,11 +127,9 @@ class Producer(Module):
 
                     ).Elif(stuff_packet,
                         # Capture reference timestamp
-                        self.delta_timestamp.set(0),
+                        self.delta_timestamp.set(self.ulpi_sink.payload.ts - self.previous_timestamp.v),
                         self.previous_timestamp.set(self.ulpi_sink.payload.ts),
-
-                        NextState("WRT0"),
-                        clear_acc_flags.eq(1),
+                        NextState("waitdone"),
                     )
 
                 # If not enabled, we just dump RX'ed data
@@ -186,7 +182,7 @@ class Producer(Module):
                         ),
 
                         # In any case (including END), we're done RXing
-                        NextState("waitdone")
+                        NextState("waitfilter")
                     ).Else(
                         self.size.inc(),
                         If(packet_too_long,
@@ -202,41 +198,46 @@ class Producer(Module):
                 )
             )
         
+        self.fsm.act("waitfilter",
+            If(filter_done,
+                If(filter_reject,
+                    NextState("IDLE")
+                ).Else(
+                    self.delta_timestamp.set(pkt_timestamp - self.previous_timestamp.v),
+                    self.previous_timestamp.set(pkt_timestamp),
+                    NextState("waitdone")
+                )
+            )
+        )
 
         self.fsm.act("waitdone",
-                If(filter_done,
-                    If(filter_reject,
-                        NextState("IDLE")
-                    ).Else(
-                        self.previous_timestamp.set(pkt_timestamp),
-                        self.delta_timestamp.set(rel_timestamp),
-                        If(rel_timestamp[56:64],
-                            self.delta_ts_size.set(7),
-                            NextState("WRT7")
-                        ).Elif(rel_timestamp[48:56],
-                            self.delta_ts_size.set(6),
-                            NextState("WRT6")
-                        ).Elif(rel_timestamp[40:48],
-                            self.delta_ts_size.set(5),
-                            NextState("WRT5")
-                        ).Elif(rel_timestamp[32:40],
-                            self.delta_ts_size.set(4),
-                            NextState("WRT4")
-                        ).Elif(rel_timestamp[24:32],
-                            self.delta_ts_size.set(3),
-                            NextState("WRT3")
-                        ).Elif(rel_timestamp[16:24],
-                            self.delta_ts_size.set(2),
-                            NextState("WRT2")
-                        ).Elif(rel_timestamp[8:16],
-                            self.delta_ts_size.set(1),
-                            NextState("WRT1")
-                        ).Else(
-                            self.delta_ts_size.set(0),
-                            NextState("WRT0")
-                        ),
-                        clear_acc_flags.eq(1))
-                ))
+            If(self.delta_timestamp.v[56:64],
+                self.delta_ts_size.set(7),
+                NextState("WRT7")
+            ).Elif(self.delta_timestamp.v[48:56],
+                self.delta_ts_size.set(6),
+                NextState("WRT6")
+            ).Elif(self.delta_timestamp.v[40:48],
+                self.delta_ts_size.set(5),
+                NextState("WRT5")
+            ).Elif(self.delta_timestamp.v[32:40],
+                self.delta_ts_size.set(4),
+                NextState("WRT4")
+            ).Elif(self.delta_timestamp.v[24:32],
+                self.delta_ts_size.set(3),
+                NextState("WRT3")
+            ).Elif(self.delta_timestamp.v[16:24],
+                self.delta_ts_size.set(2),
+                NextState("WRT2")
+            ).Elif(self.delta_timestamp.v[8:16],
+                self.delta_ts_size.set(1),
+                NextState("WRT1")
+            ).Else(
+                self.delta_ts_size.set(0),
+                NextState("WRT0")
+            ),
+            clear_acc_flags.eq(self.flags.v[log2_int(HF0_FIRST)] | self.flags.v[log2_int(HF0_LAST)]),
+        )
 
         # Write header beginning with last header byte
         write_hdr("WRT7", "WRT6", self.delta_timestamp.v[56:64])

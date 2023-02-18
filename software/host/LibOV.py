@@ -464,10 +464,12 @@ class RXCSniff:
 
 
         def matchMagic(self, byt):
-            return byt == 0xAC or byt == 0xAD or byt == 0xA0
+            return byt == 0xAC or byt == 0xAD or byt == 0xA1 or byt == 0xA0
 
         def getPacketSize(self, buf):
-            if buf[0] != 0xA0:
+            if buf[0] == 0xA1:
+                return 1
+            elif buf[0] != 0xA0:
                 return 2
             else:
                 #print("SIZING: %s" % " ".join("%02x" %i for i in buf))

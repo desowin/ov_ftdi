@@ -8,6 +8,13 @@ RXCMD_MASK = 0xBF
 # 1 byte PID + (HS interrupt/isochronous) 1024 bytes data + 2 byte CRC
 MAX_PACKET_SIZE = 1027
 
+# Timeout, in 100 MHz clocks, after which non-full host burst packet can be sent
+FLUSH_TIMEOUT = 10000000
+
+# Single byte filler sent inside frame to prevent data trapping on SDRAM write
+FILLER_MAGIC = 0xA1
+FILLER_TIMEOUT = FLUSH_TIMEOUT//2
+
 #  Physical layer error
 HF0_ERR =  0x01
 

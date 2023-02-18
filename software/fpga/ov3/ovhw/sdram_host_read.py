@@ -1,9 +1,11 @@
 from migen import *
 from migen.genlib.fsm import FSM, NextState
 from migen.genlib.fifo import SyncFIFO
+from migen.genlib.misc import WaitTimer
 from misoc.interconnect.csr import AutoCSR, CSRStorage, CSRStatus
 from misoc.interconnect.stream import Endpoint
 
+from ovhw.constants import *
 from ovhw.whacker.util import Acc, Acc_inc
 
 Output = Signal
@@ -156,21 +158,27 @@ class SDRAM_Host_Read(Module, AutoCSR):
         self.comb += burst_rem_next.eq(burst_rem)
         self.sync += burst_rem.eq(burst_rem_next)
 
-        # when the sdram_fifo is not anymore writable, start bursting out that data.
+        burst_timer = WaitTimer(FLUSH_TIMEOUT)
+        self.submodules += burst_timer
+
+        # Start bursting out data after sdram_fifo becomes full (is not anymore
+        # writable) or if no new word enters sdram_fifo for FLUSH_TIMEOUT clocks
 
         self.host_write_fsm.act("IDLE",
+            burst_rem_next.eq(sdram_fifo.level),
+            burst_timer.wait.eq(burst_rem == sdram_fifo.level),
             self.source.payload.d.eq(0xD0),
-            self.source.stb.eq(sdram_fifo.readable &~ sdram_fifo.writable),
+            self.source.stb.eq(sdram_fifo.readable & (~sdram_fifo.writable | burst_timer.done)),
             If(self.source.ack & self.source.stb,
                 NextState("SEND_HEADER")
             )
         )
 
         self.host_write_fsm.act("SEND_HEADER",
-            self.source.payload.d.eq(host_burst_length - 1),
+            self.source.payload.d.eq(sdram_fifo.level - 1),
             self.source.stb.eq(1),
             If(self.source.ack & self.source.stb,
-                burst_rem_next.eq(host_burst_length - 1),
+                burst_rem_next.eq(sdram_fifo.level - 1),
                 NextState("SEND_DATA_ODD")
             )
         )
