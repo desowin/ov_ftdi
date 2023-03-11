@@ -1,12 +1,11 @@
 from migen import *
 from misoc.interconnect.stream import Endpoint
-from migen.sim.generic import Simulator
-from migen.actorlib.sim import SimActor, Dumper, Token
+from migen.sim import run_simulation
 
 from ovhw.whacker.consumer import Consumer
 from ovhw.whacker.util import dmatpl
 
-from ovhw.ov_types import D_LAST, ULPI_DATA_D
+from ovhw.ov_types import D_LAST
 
 import unittest
 
@@ -20,52 +19,17 @@ class TestBench(Module):
 
                 self.sync += self.dat_r.eq(self.adr)
 
-        self.submodules.port = PORT(bits_for(1024), 8)
+        self.submodules.port = PORT(bits_for(2048), 8)
+        self.source = Endpoint(dmatpl(2048))
+        self.sink = Endpoint(D_LAST)
 
-            
-        def _deferred_src_gen():
-            yield
-            yield from self.src_gen
-
-        def _deferred_sink_gen():
-            yield
-            yield from self.sink_gen
-
-        class SimSource(SimActor):
-            def __init__(self):
-                self.source = Endpoint(dmatpl(1024))
-                SimActor.__init__(self, _deferred_src_gen())
-
-        class SimSink(SimActor):
-            def __init__(self):
-                self.sink = Endpoint(D_LAST)
-                SimActor.__init__(self, _deferred_sink_gen())
-
-        self.submodules.src = SimSource()
-        self.submodules.c = Consumer(self.port, 1024)
-        self.comb += self.src.source.connect(self.c.sink)
-        self.comb += self.src.busy.eq(0)
-
-        self.submodules.dmp = SimSink()
-        self.comb += self.c.source.connect(self.dmp.sink)
-        self.comb += self.dmp.busy.eq(0)
-
-    def setSeq(self, src_gen, sink_gen):
-        self.src_gen = src_gen
-        self.sink_gen = sink_gen
-
-    def do_simulation(self, s):
-        pass
-
+        self.submodules.c = Consumer(self.port, 2048)
+        self.comb += [self.source.connect(self.c.sink),
+                      self.c.source.connect(self.sink)]
 
 class TestConsumer(unittest.TestCase):
     def setUp(self):
         self.tb = TestBench()
-        self.sim = Simulator(self.tb)
-
-    def _run(self):
-        with self.sim:
-            self.sim.run(200)
 
     def testConsumer2(self):
         tests = [
@@ -75,25 +39,34 @@ class TestConsumer(unittest.TestCase):
 
         def srcgen():
             for t in tests:
-                yield Token('source', t)
+                yield self.tb.source.payload.start.eq(t["start"])
+                yield self.tb.source.payload.count.eq(t["count"])
+                yield self.tb.source.stb.eq(1)
                 yield
+                while not (yield self.tb.source.ack):
+                    yield
+            yield self.tb.source.stb.eq(0)
+            yield
 
         def sinkgen():
+            yield self.tb.sink.ack.eq(1)
+            yield
             for test in tests:
                 for n, ck in enumerate(range(
                     test["start"], test["start"] + test["count"])):
-                    last = n == test["count"] - 1
 
-                    t = Token("sink", idle_wait=True)
-                    yield t
-                    
-                    self.assertEqual(t.value['d'], ck & 0xFF)
-                    self.assertEqual(t.value['last'], last)
-                    self.last = t.value
+                    while not (yield self.tb.sink.stb):
+                        yield
 
-        self.tb.setSeq(srcgen(), sinkgen())
+                    d = yield self.tb.sink.payload.d
+                    last = yield self.tb.sink.payload.last
+                    yield
 
-        self._run()
+                    self.assertEqual(d, ck & 0xFF)
+                    self.assertEqual(last, n == test["count"] - 1)
+                    self.last = {"d": d, "last": last}
+
+        run_simulation(self.tb, [srcgen(), sinkgen()])
 
         self.assertEqual(self.last, {"d":119, "last":1})
 

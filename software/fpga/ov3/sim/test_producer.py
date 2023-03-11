@@ -3,8 +3,7 @@ import unittest
 from migen import *
 from migen.fhdl.bitcontainer import bits_for
 from misoc.interconnect.stream import Endpoint
-from migen.actorlib.sim import SimActor, Dumper, Token
-from migen.sim.generic import Simulator, TopLevel
+from migen.sim import run_simulation, passive
 
 from ovhw.ov_types import ULPI_DATA_TAG
 
@@ -19,92 +18,74 @@ class TestBench(Module):
                 self.adr = Signal(aw)
                 self.dat_w = Signal(dw)
                 self.we = Signal(1)
+                self.mem = bytearray(2**aw)
 
-                import array
-                self.mem = array.array('B', [0] * 2**aw)
-
-            def do_simulation(self, selfp):
-                writing, w_addr, w_data = selfp.we, selfp.adr, selfp.dat_w
-                if writing:
-                    assert w_addr < 1024
-                    self.mem[w_addr] = w_data
-
+            @passive
+            def gen(port):
+                while True:
+                    writing = yield port.we
+                    if writing:
+                        w_addr = yield port.adr
+                        w_data = yield port.dat_w
+                        port.mem[w_addr] = w_data
+                    yield
 
         self.submodules.port = PORT(bits_for(1024), 8)
+        self.source = Endpoint(ULPI_DATA_TAG)
+        self.sink = Endpoint(dmatpl(1024))
+        self.consume_watermark = Signal(max=1024)
+        self.ena = Signal(1)
 
-        def _deferred_source_gen():
-            yield
-            yield from self.src_gen
+        self.submodules.p = Producer(self.port, 1024, self.consume_watermark, self.ena)
+        self.comb += [self.source.connect(self.p.ulpi_sink),
+                      self.p.out_addr.connect(self.sink)]
 
-        def _deferred_sink_gen():
-            yield
-            yield from self.sink_gen
-
-        class SimSource(SimActor):
-            def __init__(self):
-                self.source = Endpoint(ULPI_DATA_TAG)
-                SimActor.__init__(self, _deferred_source_gen())
-
-        class SimDMASink(SimActor):
-            def __init__(self):
-                self.sink = Endpoint(dmatpl(1024))
-                SimActor.__init__(self, _deferred_sink_gen())
-
-        self.consume_watermark  =Signal(max=1024)
-
-        self.submodules.src = SimSource()
-        self.submodules.p = Producer(self.port, 1024, self.consume_watermark, 1)
-        self.comb += self.src.source.connect(self.p.ulpi_sink)
-        self.comb += self.src.busy.eq(0)
-
-        self.submodules.dmp = SimDMASink()
-        self.comb += self.p.out_addr.connect(self.dmp.sink)
-        self.comb += self.dmp.busy.eq(0)
-
-    def do_simulation(self, selfp):
-        self.selfp = selfp
-
-    
     def packet(self, size=0, st=0, end=1, timestamp=0):
         def _(**kwargs):
             jj = {"is_start":0, "is_end":0, "is_ovf":0, "is_err":0,
                   "d":0,"ts":0}
             jj.update(kwargs)
-            return jj
+            for name,value in jj.items():
+                yield getattr(self.source.payload, name).eq(value)
+            yield
+            while not (yield self.source.ack):
+                yield
 
-        yield  Token('source', _(is_start=1, ts=timestamp))
+        yield self.source.stb.eq(1)
+
+        yield from _(is_start=1, ts=timestamp)
         for i in range(size):
-            yield  Token('source', _(d=(i+st)&0xFF))
-        
-        yield  Token('source', _(is_end=1))
+            yield from _(d=(i+st)&0xFF)
+
+        yield from _(is_end=1)
+
+        yield self.source.stb.eq(0)
+
 
 class TestProducer(unittest.TestCase):
     def setUp(self):
         self.tb = TestBench()
-        vcd = None
-        #vcd = "test_producer.vcd"
-        self.sim = Simulator(self.tb, TopLevel(vcd, vcd_level = 3))
-
-    def _run(self):
-        with self.sim as sim:
-            sim.run(8000)
 
     def test_producer(self):
         seq = [
             (530, 0, 1, 0xCAFEBA),
-            (530, 0x10, 1, 0xCDEF0),
-            (10, 0x20, 4, 0xDE0000),
-            (10, 0x30, 2, 0xDF0123),
-            (900, 0x30, 4, 0xE10320),
-            (10, 0x30, 2, 0xE34567)
+            (530, 0x10, 1, 0x120CDEF0),
+            (10, 0x20, 4, 0x1234DE0000),
+            (10, 0x30, 2, 0x123456DF0123),
+            (900, 0x30, 4, 0x12345678E10320),
+            (10, 0x30, 2, 0x123456789AE34567)
         ]
 
         def src_gen():
+            # Enable capture and wait few clock cycles to make sure HF0_FIRST is
+            # in stuffed packet, i.e. not set on first actual packet
+            yield
+            yield self.tb.ena.eq(1)
+            for i in range(10):
+                yield
+            # Generate test packets
             for p in seq:
                 yield from self.tb.packet(*p)
-
-        self.tb.src_gen = src_gen()
-
 
         # Build a reverse-mapping from bits to constant names
         import ovhw.constants
@@ -113,29 +94,42 @@ class TestProducer(unittest.TestCase):
             if k.startswith("HF0_"):
                 flag_names[v] = k[4:]
 
-
         def sink_get_packet(sub_len, sub_base, sub_flags, timestamp):
             # Expected payload length
             calc_len = sub_len if sub_len < MAX_PACKET_SIZE else MAX_PACKET_SIZE
-            
-            t = Token('sink')
-            yield t
+
+            while not (yield self.tb.sink.stb):
+                yield
 
             # Long delay before packet readout to simulate blocked
             # SDRAM
             for i in range(600):
-                yield None
-            
-            print("DMAFROM: %04x (%02x)" % (t.value['start'], t.value['count']))
+                yield
+
+            start = yield self.tb.sink.payload.start
+            count = yield self.tb.sink.payload.count
+
+            yield self.tb.sink.ack.eq(1)
+            yield
+            yield self.tb.sink.ack.eq(0)
+
+            print("DMAFROM: %04x (%02x)" % (start, count))
 
             mem = self.tb.port.mem
 
             # Read packet header
-            i = t.value['start']
+            i = start
             p_magic = mem[i]
-            p_flags = mem[i+1] | mem[i+2] 
-            p_size = mem[i+3] | mem[i+4] << 8
-            p_timestamp = mem[i+5] | mem[i+6] << 8 | mem[i+7] << 16
+            p_flags = mem[i+1]
+            size = mem[i+2] | mem[i+3] << 8
+            p_ts_size = ((size & 0xE000) >> 13) + 1
+            p_size = size & 0x1FFF
+            delta_ts = 0
+            for j in range(p_ts_size):
+                delta_ts |= mem[i+4+j] << j * 8
+            self.ts += delta_ts
+            p_timestamp = self.ts
+            offset = 4 + p_ts_size
 
             # Check that the packet header we read out was what we were
             # expecting
@@ -144,41 +138,43 @@ class TestProducer(unittest.TestCase):
             self.assertEqual(p_timestamp, timestamp)
 
             # Check that the DMA request matched the packet
-            self.assertEqual(t.value['count'], calc_len + 8)
+            self.assertEqual(count, calc_len + offset)
 
             # Build and print the flags
-            flag_names = []
+            e = []
             for i in range(0,16):
                 if p_flags & 1<<i and 1<<i in flag_names:
                     e.append(flag_names[1<<i])
-            print("\tFlag: %s" % ", ".join(flag_names))
+            print("\tFlag: %s" % ", ".join(e))
 
             # Fetch and print the body
             packet = []
-            for i in range(t.value['start'], t.value['start'] +
-                           t.value['count']):
+            for i in range(start, start + count):
                 packet.append(mem[i%1024])
+                yield self.tb.consume_watermark.eq(i & (1024-1))
                 yield
             print("\t%s" % " ".join("%02x" % i for i in packet))
 
             # Update the producer watermark
-            self.tb.selfp.consume_watermark = (t.value['start'] + t.value['count']) & (1024-1)
+            yield self.tb.consume_watermark.eq((start + count) & (1024-1))
+            yield
 
             # Check the payload matches
             expected_payload = [(sub_base+i) & 0xFF for i in range(0, calc_len)]
-            self.assertEqual(expected_payload, packet[8:])
+            self.assertEqual(expected_payload, packet[offset:])
 
         def sink_gen():
             yield from sink_get_packet(0, 0, 0x10, 0)
             for p in seq:
                 yield from sink_get_packet(*p)
 
+        self.ts = 0
         self.tb.sink_gen = sink_gen()
-
-
-        self._run()
+        vcd = None
+        #vcd = "test_producer.vcd"
+        run_simulation(self.tb, [src_gen(), sink_gen(), self.tb.port.gen()], vcd_name=vcd)
 
 
 if __name__ == '__main__':
     unittest.main()
-        
+

@@ -1,15 +1,12 @@
 from migen import *
 from misoc.interconnect.csr import AutoCSR, CSRStatus, CSRStorage
-from misoc.interconnect.stream import Endpoint, SyncFIFO
-from migen.genlib.fsm import FSM, NextState
+from misoc.interconnect.stream import SyncFIFO
 
 from ovhw.whacker.consumer import Consumer
 from ovhw.whacker.producer import Producer
 from ovhw.whacker.util import dmatpl
 
 from ovhw.constants import *
-
-from ovhw.ov_types import D_LAST, ULPI_DATA_D
 
 class Whacker(Module, AutoCSR):
     def __init__(self, depth):
@@ -80,57 +77,3 @@ class Whacker(Module, AutoCSR):
                         self._last_pw_hi.status.eq(self.producer.produce_write.v[8:]),
                         )
                     ]
-
-class TestWhacker(Module):
-    
-    def __init__(self):
-        from migen.actorlib.sim import SimActor, Dumper, Token
-        def packet(size=0, st=0, end=1):
-            yield  Token('source', {'rxcmd':1, 'd':0x40})
-            for i in range(size):
-                yield  Token('source', {'rxcmd':0, 'd':(i+st)&0xFF})
-            
-            if end != 4:
-                yield  Token('source', {'rxcmd':1, 'd':0x40 | end})
-
-            print("Complete")
-
-        def gen():
-            for i in packet(530, 0, 1):
-                yield i
-
-            for i in packet(530, 0x10, 1):
-                yield i
-
-            for i in packet(10, 0x20, 4):
-                yield i
-            
-            for i in packet(10, 0x30, 2):
-                yield i
-
-        class SimSource(SimActor):
-            def __init__(self):
-                self.source = Endpoint(ULPI_DATA_D)
-                SimActor.__init__(self, gen())
-    
-        self.submodules.w = Whacker(2048)
-
-        self.submodules.src = SimSource()
-        self.comb += self.src.source.connect(self.w.sink)
-        self.comb += self.src.busy.eq(0)
-
-        self.submodules.dmp = Dumper(D_LAST)
-        self.comb += self.w.source.connect(self.dmp.result)
-        self.comb += self.dmp.busy.eq(0)
-
-
-if __name__ == '__main__':
-    from migen.sim.generic import Simulator, TopLevel
-    from migen.sim.icarus import Runner
-    tl = TopLevel("testwhacker.vcd")
-    tl.clock_domains[0].name_override='sys_clk'
-    test = TestWhacker()
-    sim = Simulator(test, tl, Runner(keep_files=True))
-    sim.run(2000)
-    
-
