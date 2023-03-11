@@ -4,8 +4,8 @@ import ovplatform.sdram_params
 import migen.test.support
 from sim.util import par, gather_files
 import os.path
-from migen.sim import icarus
-from migen.sim.generic import Simulator, TopLevel
+#from migen.sim import icarus
+from migen.sim import run_simulation
 
 class SDRAMModel(Module):
     def __init__(self, chipname, nchips=1):

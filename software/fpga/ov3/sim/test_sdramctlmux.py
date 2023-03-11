@@ -3,6 +3,7 @@ from ovhw.sdram_mux import SDRAMMux
 import unittest
 import sim.sdram_test_util
 
+@unittest.skip("TODO: Update to new Migen simulator")
 class SDRAMMultiTester(sim.sdram_test_util.SDRAMUTFramework):
     class TestBench(Module):
         """ 
