@@ -1,90 +1,61 @@
 from migen import *
-from migen.bus.csr import Initiator, Interconnect
-from migen.sim.generic import Simulator
-from migen.bus.transactions import *
-from migen.bank import csrgen
+from misoc.interconnect.csr_bus import CSRBank
+from migen.sim import run_simulation
 
 from ovhw.leds import LED_outputs
-from sim.util import TIProxy
 
 import unittest
 
 
-class TB(Module):
+class TestBench(Module):
     def __init__(self):
-        self.prx = TIProxy()
-
         self.l_0_ovr = Signal()
         self.leds_v = Signal(3)
         self.submodules.leds = LED_outputs(self.leds_v, [[self.l_0_ovr], [0], [1]])
-        self.submodules.ini = Initiator(self.prx._ini_iterator())
-        self.submodules.ba = csrgen.BankArray(self, lambda name, _: 0)
-        self.submodules.incon = Interconnect(self.ini.bus, self.ba.get_buses())
-
-        self._gen = None
-
-    def setGen(self, gen):
-        self._gen = gen
-
-    def do_simulation(self, selfp):
-        self.selfp = selfp
-
-        try:
-            next(self._gen)
-        except StopIteration:
-            raise StopSimulation
+        self.submodules.csr = CSRBank(self.leds.get_csrs())
 
 class LEDTests(unittest.TestCase):
     def setUp(self):
-        self.tb = TB()
-        self.sim = Simulator(self.tb)
+        self.tb = TestBench()
 
-    def _run(self):
-        with self.sim as sim:
-            sim.run()
-
-    def test__write_direct(self):
+    def test_write_direct(self):
         def gen():
-            self.tb.prx.issue(TWrite(0, 0x7))
-            yield from self.tb.prx.wait()
-            lv = self.tb.selfp.leds_v
-            self.tb.prx.fini()
-
+            yield from self.tb.csr.bus.write(0, 0x7)
+            yield
+            lv = yield self.tb.leds_v
             self.assertEqual(lv, 7)
 
-        self.tb.setGen(gen())
+        run_simulation(self.tb, gen())
 
-        self._run()
-
-    def _disabled_test_muxes_1(self):
+    def test_muxes_1(self):
         def gen():
             # Set muxes
-            self.tb.prx.issue(TWrite(1, 1))
-            self.tb.prx.issue(TWrite(2, 1))
-            self.tb.prx.issue(TWrite(3, 1))
-
-            yield from self.tb.prx.wait()
+            yield from self.tb.csr.bus.write(1, 1)
+            yield
+            yield from self.tb.csr.bus.write(2, 1)
+            yield
+            yield from self.tb.csr.bus.write(3, 1)
+            yield
 
             # Test that the MUX worked
-            lv = self.tb.selfp.leds_v
+            lv = yield self.tb.leds_v
             self.assertEqual(lv, 0x4)
 
             # Test changing an LED results in writing to the mux
-            self.tb.selfp.l_0_ovr = 1
+            yield self.tb.l_0_ovr.eq(1)
             yield
-            self.assertEqual(self.tb.selfp.leds_v, 5)
-            
+            self.assertEqual((yield self.tb.leds_v), 5)
+
             # Test partial mux
-            self.tb.prx.issue(TWrite(3,0))
-            yield from self.tb.prx.wait()
-            self.assertEqual(self.tb.selfp.leds_v, 1)
+            yield from self.tb.csr.bus.write(3, 0)
+            yield
+            self.assertEqual((yield self.tb.leds_v), 1)
 
-            self.tb.prx.issue(TWrite(0,0x4))
-            yield from self.tb.prx.wait()
-            self.assertEqual(self.tb.selfp.leds_v, 0x5)
+            yield from self.tb.csr.bus.write(0, 0x4)
+            yield
+            self.assertEqual((yield self.tb.leds_v), 0x5)
 
-        self.tb.setGen(gen())
-        self._run()
+        run_simulation(self.tb, gen())
 
 
 if __name__ == "__main__":
