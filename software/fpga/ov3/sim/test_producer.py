@@ -106,8 +106,18 @@ class TestProducer(unittest.TestCase):
             for i in range(600):
                 yield
 
+            p_timestamp = yield self.tb.sink.payload.ts
+            p_first = yield self.tb.sink.payload.flag_first
+            p_last = yield self.tb.sink.payload.flag_last
+            p_err = yield self.tb.sink.payload.flag_err
+            p_ovf = yield self.tb.sink.payload.flag_ovf
             start = yield self.tb.sink.payload.start
             count = yield self.tb.sink.payload.count
+
+            # Reconstruct flags
+            p_flags = p_first * HF0_FIRST | p_last * HF0_LAST | \
+                      p_err * HF0_ERR | p_ovf * HF0_OVF | \
+                      (count > MAX_PACKET_SIZE) * HF0_TRUNC
 
             yield self.tb.sink.ack.eq(1)
             yield
@@ -117,28 +127,13 @@ class TestProducer(unittest.TestCase):
 
             mem = self.tb.port.mem
 
-            # Read packet header
-            i = start
-            p_magic = mem[i]
-            p_flags = mem[i+1]
-            size = mem[i+2] | mem[i+3] << 8
-            p_ts_size = ((size & 0xE000) >> 13) + 1
-            p_size = size & 0x1FFF
-            delta_ts = 0
-            for j in range(p_ts_size):
-                delta_ts |= mem[i+4+j] << j * 8
-            self.ts += delta_ts
-            p_timestamp = self.ts
-            offset = 4 + p_ts_size
-
             # Check that the packet header we read out was what we were
             # expecting
-            self.assertEqual(p_magic, 0xA0)
-            self.assertEqual(p_size, calc_len)
+            self.assertEqual(count, calc_len)
             self.assertEqual(p_timestamp, timestamp)
 
             # Check that the DMA request matched the packet
-            self.assertEqual(count, calc_len + offset)
+            self.assertEqual(count, calc_len)
 
             # Build and print the flags
             e = []
@@ -161,7 +156,7 @@ class TestProducer(unittest.TestCase):
 
             # Check the payload matches
             expected_payload = [(sub_base+i) & 0xFF for i in range(0, calc_len)]
-            self.assertEqual(expected_payload, packet[offset:])
+            self.assertEqual(expected_payload, packet)
 
         def sink_gen():
             yield from sink_get_packet(0, 0, 0x10, 0)

@@ -3,7 +3,18 @@ from migen.fhdl.bitcontainer import bits_for
 
 def dmatpl(depth):
     b = bits_for(depth-1)
-    return [('start', b), ('count', b)]
+    return [('ts', 64),
+            # Filter indicates packet should be discarded
+            ('discard', 1),
+            # Capture flags. Note that TRUNC is derived from count.
+            ('flag_first', 1),
+            ('flag_last', 1),
+            ('flag_ovf', 1),
+            ('flag_err', 1),
+            # Start address of actual USB packet start in ring buffer
+            ('start', b),
+            # Packet size, but only up to MAX_PACKET_SIZE bytes are captured
+            ('count', 13)]
 
 class Acc(Module):
     def __init__(self, *args, **kwargs):

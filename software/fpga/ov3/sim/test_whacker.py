@@ -84,9 +84,11 @@ class TestWhacker(unittest.TestCase):
                 yield from self.tb.gen_packet(timestamp, data)
             yield from self.tb.write_reg("CFG", 0)
             while True:
+                busy = yield self.tb.w.consumer.busy
+                stb = yield self.tb.w.consumer.sink.stb
                 rd = yield self.tb.w.consumer.pos
                 wr = yield self.tb.w.producer.produce_write.v
-                if (rd + 1) % 2048 == wr:
+                if (busy == 0) and (stb == 0) and ((rd + 1) % 2048 == wr):
                     break
                 yield
 

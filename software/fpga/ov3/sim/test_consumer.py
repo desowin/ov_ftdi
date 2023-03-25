@@ -33,12 +33,13 @@ class TestConsumer(unittest.TestCase):
 
     def testConsumer2(self):
         tests = [
-            {"start":0,   "count":  4},
-            {"start":555, "count": 77}
+            {"ts": 0xC0DE, "start":0,   "count":  4},
+            {"ts": 0xDEADBEEF, "start":555, "count": 77}
         ]
 
         def srcgen():
             for t in tests:
+                yield self.tb.source.payload.ts.eq(t["ts"])
                 yield self.tb.source.payload.start.eq(t["start"])
                 yield self.tb.source.payload.count.eq(t["count"])
                 yield self.tb.source.stb.eq(1)
@@ -48,19 +49,39 @@ class TestConsumer(unittest.TestCase):
             yield self.tb.source.stb.eq(0)
             yield
 
+        def read_sink():
+            while not (yield self.tb.sink.stb):
+                yield
+
+            d = yield self.tb.sink.payload.d
+            last = yield self.tb.sink.payload.last
+            yield
+
+            return (d, last)
+
+        def expect_header(flags, delta_ts, size):
+            delta_ts_size = max(0, delta_ts.bit_length() - 1) // 8
+            header = bytearray([0xA0, flags, size & 0xFF,
+                                (delta_ts_size << 5) | (size & 0x1F00) >> 8])
+            for i in range(delta_ts_size + 1):
+                header.append((delta_ts >> (i * 8)) & 0xFF)
+            for byte in header:
+                (d, last) = yield from read_sink()
+                self.assertEqual(d, byte)
+                self.assertFalse(last)
+
         def sinkgen():
+            prev_ts = 0
             yield self.tb.sink.ack.eq(1)
             yield
             for test in tests:
+                delta_ts = test["ts"] - prev_ts
+                prev_ts = test["ts"]
+                yield from expect_header(0, delta_ts, test["count"])
                 for n, ck in enumerate(range(
                     test["start"], test["start"] + test["count"])):
 
-                    while not (yield self.tb.sink.stb):
-                        yield
-
-                    d = yield self.tb.sink.payload.d
-                    last = yield self.tb.sink.payload.last
-                    yield
+                    (d, last) = yield from read_sink()
 
                     self.assertEqual(d, ck & 0xFF)
                     self.assertEqual(last, n == test["count"] - 1)
