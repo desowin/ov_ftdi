@@ -19,6 +19,9 @@ class Producer(Module):
         self.submodules.produce_write = Acc_inc(max=depth)
         self.submodules.produce_header = Acc(max=depth)
 
+        self.submodules.pid = Acc(4)
+        self.submodules.pid_valid = Acc(1)
+
         self.submodules.discard = Acc(1)
 
         self.submodules.size = Acc_inc_sat(13)
@@ -89,6 +92,8 @@ class Producer(Module):
                     # Produce header points to first captured USB data byte and
                     # produce write points after last written byte.
                     self.produce_write.set(self.produce_header.v),
+                    self.pid.set(0),
+                    self.pid_valid.set(0),
                     self.discard.set(0),
                     self.size.set(0),
                     self.flag_first.set(self.packet_first.v),
@@ -157,6 +162,10 @@ class Producer(Module):
                             wrport.dat_w.eq(self.ulpi_sink.payload.d),
                             wrport.we.eq(1),
                             do_filter_write.eq(1)
+                        ),
+                        If(self.size.v == 0,
+                            self.pid.set(self.ulpi_sink.payload.d[:4]),
+                            self.pid_valid.set(self.ulpi_sink.payload.d[:4] == Cat(~self.ulpi_sink.payload.d[4:8])),
                         )
                     )
                 )
@@ -177,6 +186,8 @@ class Producer(Module):
         self.fsm.act("SEND",
             self.out_addr.stb.eq(1),
             self.out_addr.payload.ts.eq(pkt_timestamp),
+            self.out_addr.payload.pid.eq(self.pid.v),
+            self.out_addr.payload.pid_valid.eq(self.pid_valid.v),
             self.out_addr.payload.discard.eq(self.discard.v),
             self.out_addr.payload.flag_first.eq(self.flag_first.v),
             self.out_addr.payload.flag_last.eq(self.flag_last.v),

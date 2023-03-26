@@ -5,6 +5,25 @@ RXCMD_MAGIC_NOP = 0x44
 
 RXCMD_MASK = 0xBF
 
+# USB 2.0 ECN: Link Power Management (LPM) Table 2-1 PID Types
+PID_EXT = 0b0000
+# Universal Serial Bus Specification Revision 2.0 Table 8-1. PID Types
+PID_OUT = 0b0001
+PID_ACK = 0b0010
+PID_DATA0 = 0b0011
+PID_PING = 0b0100
+PID_SOF = 0b0101
+PID_NYET = 0b0110
+PID_DATA2 = 0b0111
+PID_SPLIT = 0b1000
+PID_IN = 0b1001
+PID_NAK = 0b1010
+PID_DATA1 = 0b1011
+PID_PRE_ERR = 0b1100
+PID_SETUP = 0b1101
+PID_STALL = 0b1110
+PID_MDATA = 0b1111
+
 # 1 byte PID + (HS interrupt/isochronous) 1024 bytes data + 2 byte CRC
 MAX_PACKET_SIZE = 1027
 

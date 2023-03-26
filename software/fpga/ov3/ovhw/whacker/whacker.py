@@ -3,6 +3,8 @@ from misoc.interconnect.csr import AutoCSR, CSRStatus, CSRStorage
 from misoc.interconnect.stream import SyncFIFO
 
 from ovhw.whacker.consumer import Consumer
+from ovhw.whacker.filter_nak import FilterNAK
+from ovhw.whacker.filter_sof import FilterSOF
 from ovhw.whacker.producer import Producer
 from ovhw.whacker.util import dmatpl
 
@@ -10,7 +12,14 @@ from ovhw.constants import *
 
 class Whacker(Module, AutoCSR):
     def __init__(self, depth):
-        self._cfg = CSRStorage(1)
+        self._cfg = CSRStorage(4)
+        """
+        Configuration register bits:
+          Bit 0 - Enable capture
+          Bit 1 - Output discarded packets with special debug magic
+          Bit 2 - Enable NAKed transaction filter
+          Bit 3 - Enable SOF packet filter
+        """
 
         debug_signals = 1
 
@@ -22,14 +31,18 @@ class Whacker(Module, AutoCSR):
         rdport = storage.get_port(async_read=False)
         self.specials += rdport
 
-        self.submodules.consumer = Consumer(rdport, depth)
+        self.submodules.consumer = Consumer(rdport, depth, self._cfg.storage[1])
+        self.submodules.filter_nak = FilterNAK(depth, self._cfg.storage[2])
+        self.submodules.filter_sof = FilterSOF(depth, self._cfg.storage[3])
         self.submodules.producer = Producer(wrport, depth, self.consumer.pos, self._cfg.storage[0])
 
         self.submodules.pkt_fifo = SyncFIFO(dmatpl(depth), 8)
 
         self.sink = self.producer.ulpi_sink
         self.comb += [
-            self.producer.out_addr.connect(self.pkt_fifo.sink),
+            self.producer.out_addr.connect(self.filter_nak.input),
+            self.filter_nak.output.connect(self.filter_sof.input),
+            self.filter_sof.output.connect(self.pkt_fifo.sink),
             self.pkt_fifo.source.connect(self.consumer.sink),
         ]
         self.source = self.consumer.source

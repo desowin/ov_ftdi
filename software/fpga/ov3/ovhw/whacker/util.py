@@ -4,6 +4,9 @@ from migen.fhdl.bitcontainer import bits_for
 def dmatpl(depth):
     b = bits_for(depth-1)
     return [('ts', 64),
+            # USB PID used by filters. Do not use if pid_valid is 0.
+            ('pid', 4),
+            ('pid_valid', 1),
             # Filter indicates packet should be discarded
             ('discard', 1),
             # Capture flags. Note that TRUNC is derived from count.

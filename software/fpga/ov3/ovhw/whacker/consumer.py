@@ -18,7 +18,7 @@ def _inc(signal, modulo, dest_signal=None):
     return dest_signal.eq(signal + 1)
 
 class Consumer(Module):
-    def __init__(self, port, depth):
+    def __init__(self, port, depth, debug_discard):
         # Sink MUST keep payload constant after asserting stb until ack
         self.sink = Endpoint(dmatpl(depth))
         self.source = Endpoint(D_LAST)
@@ -103,7 +103,7 @@ class Consumer(Module):
             ).Else(
                 delta_ts_size.set(0)
             ),
-            If(self.sink.payload.discard,
+            If(self.sink.payload.discard & ~debug_discard,
                 If(self.ct,
                     # Update consumer watermark
                     self.pos_next.eq(self.sink.payload.start - 1 + self.ct),
@@ -114,7 +114,11 @@ class Consumer(Module):
             ).Else(
                 # Delta timestamp will be sent, update base timestamp
                 previous_timestamp.set(self.sink.payload.ts),
-                NextState("WH0")
+                If(self.sink.payload.discard,
+                    NextState("WH0D")
+                ).Else(
+                    NextState("WH0")
+                )
             )
         )
 
@@ -129,7 +133,7 @@ class Consumer(Module):
             )
 
         # Header format:
-        # A0 - magic byte
+        # A0 - magic byte (A2 if packet is discarded and debug is enabled)
         # F0 - flags
         # SL SH - packet size (lower 13 bits) and delta timestamp size (3 bits)
         # T0 T1 T2 T3 T4 T5 T6 T7 - delta timestamp from previous packet
@@ -147,6 +151,7 @@ class Consumer(Module):
         # F0.2 - CLIP - Filter clipped (we do not set yet)
         # F0.3 - PERR - Protocol level err (but ULPI was fine, ???)
         write_hdr("WH0", "WRF0", 0xA0)
+        write_hdr("WH0D", "WRF0", 0xA2)
         write_hdr("WRF0", "WRSL", pkt_flags)
         # 13 bits (8191) for packet size is more than enough
         # Use the upper 3 bits to encode delta timestamp size

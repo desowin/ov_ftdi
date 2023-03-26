@@ -284,7 +284,8 @@ int CStreamCallback (uint8_t *buffer, int length,
       }
       cb(p, p[1]+2, progress, NULL);
       break;
-    case 0xA0: 
+    case 0xA0:
+    case 0xA2:
       if (packet_buf_len < 8) {
 	//	printf("packet cut off, returning\n");
 	goto done;

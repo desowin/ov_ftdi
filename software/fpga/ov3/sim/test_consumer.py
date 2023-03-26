@@ -22,8 +22,9 @@ class TestBench(Module):
         self.submodules.port = PORT(bits_for(2048), 8)
         self.source = Endpoint(dmatpl(2048))
         self.sink = Endpoint(D_LAST)
+        self.debug_discard = Signal()
 
-        self.submodules.c = Consumer(self.port, 2048)
+        self.submodules.c = Consumer(self.port, 2048, self.debug_discard)
         self.comb += [self.source.connect(self.c.sink),
                       self.c.source.connect(self.sink)]
 

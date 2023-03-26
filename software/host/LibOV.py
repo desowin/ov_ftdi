@@ -443,7 +443,7 @@ class RXCSniff:
         data_crc = staticmethod(crcmod.mkCrcFun(0x18005))
 
         def getNeededSizeForMagic(self, b):
-            if b == 0xA0:
+            if b in (0xA0, 0xA2):
                 return 4
             return 1
 
@@ -464,12 +464,12 @@ class RXCSniff:
 
 
         def matchMagic(self, byt):
-            return byt == 0xAC or byt == 0xAD or byt == 0xA1 or byt == 0xA0
+            return byt in (0xAC, 0xAD, 0xA1, 0xA0, 0xA2)
 
         def getPacketSize(self, buf):
             if buf[0] == 0xA1:
                 return 1
-            elif buf[0] != 0xA0:
+            elif buf[0] not in (0xA0, 0xA2):
                 return 2
             else:
                 #print("SIZING: %s" % " ".join("%02x" %i for i in buf))
@@ -482,7 +482,7 @@ class RXCSniff:
 
 
         def consume(self, buf):
-            if buf[0] == 0xA0:
+            if buf[0] in (0xA0, 0xA2):
                 flags = buf[1]
                 delta_ts_len = (buf[3] >> 5) + 1
                 orig_len = (buf[3] & 0x1f) << 8 | buf[2]
@@ -495,10 +495,14 @@ class RXCSniff:
 
                 if flags != 0 and flags != HF0_FIRST and flags != HF0_LAST:
                     print("PERR: %04X (%s)" % (flags, decode_flags(flags)))
-               
+
                 if flags & HF0_FIRST:
                     self.got_start = True
                     self.cumulative_ts = 0
+
+                # 0xA2 can only appear when filter debug bit is set
+                if buf[0] == 0xA2:
+                    print("Filtered", " ".join("%02x" % b for b in buf[offset:]))
 
                 if self.got_start:
                     self.handle_usb(self.cumulative_ts, buf[offset:], flags, orig_len)

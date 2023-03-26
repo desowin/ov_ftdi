@@ -260,7 +260,7 @@ def sdramtest(dev):
 sniff_speeds = ["hs", "fs", "ls"]
 sniff_formats = ["verbose", "custom", "pcap", "iti1480a"]
 
-def do_sniff(dev, speed, format, out, timeout):
+def do_sniff(dev, speed, format, out, timeout, debug_filter, filter_nak, filter_sof):
     # LEDs off
     dev.regs.LEDS_MUX_2.wr(0)
     dev.regs.LEDS_OUT.wr(0)
@@ -320,9 +320,17 @@ def do_sniff(dev, speed, format, out, timeout):
     if output_handler is not None:
       dev.rxcsniff.service.handlers = [output_handler.handle_usb]
 
+    cfg = 1
+    if debug_filter:
+        cfg |= (1 << 1)
+    if filter_nak:
+        cfg |= (1 << 2)
+    if filter_sof:
+        cfg |= (1 << 3)
+
     elapsed_time = 0
     try:
-        dev.regs.CSTREAM_CFG.wr(1)
+        dev.regs.CSTREAM_CFG.wr(cfg)
         while 1:
             dev.regs.SDRAM_SINK_PTR_READ.wr(0)
             dev.regs.OVF_INSERT_CTL.wr(0)
@@ -402,10 +410,17 @@ class Sniff(Command):
         sp.add_argument('--out', type=str,
                         help='Output file name')
         sp.add_argument('--timeout', type=int, help='Timeout in seconds')
+        sp.add_argument('--filter-nak', action='store_true',
+                        help='Filter NAKed transactions in gateware')
+        sp.add_argument('--filter-sof', action='store_true',
+                        help='Filter SOF packets in gateware')
+        sp.add_argument('--debug-filter', action='store_true',
+                        help='Report filtered packets instead of discarding')
 
     @staticmethod
     def go(dev, args):
-        do_sniff(dev, args.speed, args.format, args.out, args.timeout)
+        do_sniff(dev, args.speed, args.format, args.out, args.timeout,
+                 args.debug_filter, args.filter_nak, args.filter_sof)
 
 
 @command('debug-stream', 'Debug Stream')
