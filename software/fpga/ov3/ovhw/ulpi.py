@@ -82,8 +82,8 @@ class ULPI_ctrl(Module):
 		RegWriteAckSet = Signal()
 
 		# register the reg read/write requests
-		self.sync += RegReadReqR.eq(ulpi_reg.rreq)
-		self.sync += RegWriteReqR.eq(ulpi_reg.wreq)
+		self.sync.ulpi += RegReadReqR.eq(ulpi_reg.rreq)
+		self.sync.ulpi += RegWriteReqR.eq(ulpi_reg.wreq)
 		
 		# signal when read/write is requested but not done
 		self.comb += RegReadReq.eq(RegReadReqR & ~ulpi_reg.rack)
@@ -91,9 +91,9 @@ class ULPI_ctrl(Module):
 		self.comb += RegWriteReq.eq(RegWriteReqR & ~ulpi_reg.wack)
 		
 		# ack logic: set ack=0 when req=0, set ack=1 when access done
-		self.sync += If(~RegReadReqR, ulpi_reg.rack.eq(0)
+		self.sync.ulpi += If(~RegReadReqR, ulpi_reg.rack.eq(0)
 			).Elif(RegReadAckSet, ulpi_reg.rack.eq(1))
-		self.sync += If(~RegWriteReqR, ulpi_reg.wack.eq(0)
+		self.sync.ulpi += If(~RegWriteReqR, ulpi_reg.wack.eq(0)
 			).Elif(RegWriteAckSet, ulpi_reg.wack.eq(1))
 			
 		exp = If(~RegWriteReqR, ulpi_reg.wack.eq(0)).Elif(RegWriteAckSet, ulpi_reg.wack.eq(1))
@@ -117,8 +117,8 @@ class ULPI_ctrl(Module):
 		ulpi_rx_stuff   = Signal()
 		ulpi_rx_stuff_d = Signal(8)
 
-		self.sync += self.data_out_source.stb.eq(1)
-		self.sync += If(ulpi_rx_stuff, 
+		self.sync.ulpi += self.data_out_source.stb.eq(1)
+		self.sync.ulpi += If(ulpi_rx_stuff,
 						self.data_out_source.payload.d.eq(ulpi_rx_stuff_d),
 						self.data_out_source.payload.rxcmd.eq(1)
 					 ).Elif(ulpi_state_rx & ulpi_bus.dir,
@@ -135,9 +135,9 @@ class ULPI_ctrl(Module):
                     )
 
 		# capture register reads at the end of RRD
-		self.sync += If(ulpi_state_rrd,ulpi_reg.rdata.eq(ulpi_bus.di))
+		self.sync.ulpi += If(ulpi_state_rrd,ulpi_reg.rdata.eq(ulpi_bus.di))
 
-		fsm = FSM()
+		fsm = ClockDomainsRenamer("ulpi")(FSM())
 		self.submodules += fsm
 		
 		fsm.act("IDLE", 

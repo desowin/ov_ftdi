@@ -77,9 +77,7 @@ class OV3(Module):
         
         # ULPI controller
         ulpi_reg = Record(ULPI_REG)
-        self.submodules.ulpi = ClockDomainsRenamer({"sys": "ulpi"}) (
-          ULPI_ctrl(self.ulpi_pl.ulpi_bus, ulpi_reg),
-        )
+        self.submodules.ulpi = ULPI_ctrl(self.ulpi_pl.ulpi_bus, ulpi_reg)
 
         # ULPI register R/W CSR interface
         self.submodules.ucfg = ULPICfg(
